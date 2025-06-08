@@ -1,8 +1,10 @@
+//Note - issi file mei all function for both booking and idempotency table
+import { Transaction } from "sequelize";
 import { Booking } from "../db/models/Booking";
 import { IdempotencyKey } from "../db/models/IdempotencyKey";
 import { BookingCreationAttributes, BookingAttributes } from "../types/booking";
-
-//Note - issi file mei all function for both booking and idempotency table
+import { validate as isValidUUID } from "uuid";
+import { BadRequestError } from "../utils/errors/app.error";
 
 export async function createBooking(
   bookingInput: BookingCreationAttributes
@@ -20,9 +22,15 @@ export async function createIdempotencyKey(key: string, bookingId?: number) {
   return idempotencyKey;
 }
 
-export async function getIdempotencyKey(key: string) {
+export async function getIdempotencyKeyWithLock(tx: Transaction, key: string) {
+  //isValid is for raw sql queries mainly
+  if (!isValidUUID(key)) {
+    throw new BadRequestError("Invalid idempotency key format");
+  }
   const idempotencyKey = await IdempotencyKey.findOne({
     where: { key },
+    transaction: tx,
+    lock: tx.LOCK.UPDATE,
   });
   return idempotencyKey;
 }
@@ -32,20 +40,14 @@ export async function getBookingById(bookingId: number) {
   return booking;
 }
 
-// export async function changeBookingStatus(
-//   bookingId: number,
-//   status: "pending" | "confirmed" | "cancelled"
-// ) {
-//   await Booking.update({ status }, { where: { id: bookingId } });
+export async function confirmBooking(tx: Transaction, bookingId: number) {
+  await Booking.update(
+    { status: "confirmed" },
+    { where: { id: bookingId }, transaction: tx }
+  );
 
-//   const updatedBooking = await Booking.findByPk(bookingId);
-//   return updatedBooking;
-// }
+  const updatedBooking = await Booking.findByPk(bookingId, { transaction: tx });
 
-export async function confirmBooking(bookingId: number) {
-  await Booking.update({ status: "confirmed" }, { where: { id: bookingId } });
-
-  const updatedBooking = await Booking.findByPk(bookingId);
   return updatedBooking;
 }
 
@@ -56,8 +58,13 @@ export async function cancelBooking(bookingId: number) {
   return updatedBooking;
 }
 
-export async function finalizeIdempotencyKey(key: string) {
-  await IdempotencyKey.update({ finalized: true }, { where: { key: key } });
-  const updatedKey = await IdempotencyKey.findByPk(key);
+export async function finalizeIdempotencyKey(tx: Transaction, key: string) {
+  await IdempotencyKey.update(
+    { finalized: true },
+    { where: { key }, transaction: tx }
+  );
+
+  const updatedKey = await IdempotencyKey.findByPk(key, { transaction: tx });
+
   return updatedKey;
 }
