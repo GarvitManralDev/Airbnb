@@ -1,3 +1,4 @@
+import { serverConfig } from "../config";
 import { sequelize } from "../db";
 import { createBookingDTO } from "../dto/booking.dto";
 import {
@@ -7,25 +8,38 @@ import {
   finalizeIdempotencyKey,
   getIdempotencyKeyWithLock,
 } from "../repositories/booking.repository";
-import { BadRequestError, NotFoundError } from "../utils/errors/app.error";
+import {
+  BadRequestError,
+  InternalServerError,
+  NotFoundError,
+} from "../utils/errors/app.error";
 import { generateIdempotencyKey } from "../utils/generateIdempotencyKey";
+import { redlock } from "../config/redis.config";
 
 export async function createBookingService(createBookingDTO: createBookingDTO) {
-  const booking = await createBooking({
-    userId: createBookingDTO.userId,
-    hotelId: createBookingDTO.hotelId,
-    totalGuests: createBookingDTO.totalGuests,
-    bookingAmount: createBookingDTO.bookingAmount,
-  });
+  const ttl = serverConfig.LOCK_TTL;
+  const bookingResource = `hotel:${createBookingDTO.hotelId}`;
 
-  const idempotencyKey = generateIdempotencyKey();
+  try {
+    await redlock.acquire([bookingResource], ttl);
+    const booking = await createBooking({
+      userId: createBookingDTO.userId,
+      hotelId: createBookingDTO.hotelId,
+      totalGuests: createBookingDTO.totalGuests,
+      bookingAmount: createBookingDTO.bookingAmount,
+    });
+    const idempotencyKey = generateIdempotencyKey();
 
-  await createIdempotencyKey(idempotencyKey, booking.id);
-
-  return {
-    bookingId: booking.id,
-    idempotencyKey: idempotencyKey,
-  };
+    await createIdempotencyKey(idempotencyKey, booking.id);
+    return {
+      bookingId: booking.id,
+      idempotencyKey: idempotencyKey,
+    };
+  } catch (error) {
+    throw new InternalServerError(
+      `Failed to acquire lock for booking resource`
+    );
+  }
 }
 
 export async function confirmBookingService(idempotencyKey: string) {
